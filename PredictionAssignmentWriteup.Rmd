@@ -1,0 +1,73 @@
+---
+title: "Prediction Assignment Writeup"
+author: "Pranav Singh"
+date: "January 30, 2016"
+output: html_document
+---
+
+# Summary
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. The goal of this this project is to predict how well participants are performing a particular activity - barbell lifts - based on data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants.
+
+
+# Data
+We first download the training data (https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) and test data (https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv). Then we load it into R as follows:
+```{r}
+pml.train.orig <- read.csv('pml-training.csv')
+pml.test.orig  <- read.csv('pml-testing.csv')
+```
+
+# Data Exploration
+We see that the observations are relatively evenly distributed among the 5 `classe` labels, with `classe A` being noticeable more abundant than the others.
+```{r}
+table(pml.train.orig$classe)
+```
+
+The training data consists of 19622 observations of 160 variables. The first 7 columns of the data are various IDs for the rows but are not useful features, so we remove them from our concern. 
+```{r}
+names(pml.train.orig)[1:7]
+cols <- names(pml.train.orig)[8:length(names(pml.train.orig))]
+pml.train <- pml.train.orig[cols]
+```
+
+Moreover, we choose to focus only on the feature columns with less than 10% missing values in order to greatly reduce the complexity for training our models.
+```{r, message=F}
+na.means <- apply(pml.train, 2, function(x) mean(is.na(x) | x == ''))
+feats <- setdiff(names(which(na.means <= 0.1)), 'classe')
+pml.train <- pml.train[c('classe', feats)]
+```
+
+# Model building
+We use the `caret` package to model the training data using the random forest and k-nearest-neighbors classification algorithms. We employ thrice-repeated 5-fold cross-validation. We preprocess the data by centering and scaling the features, and tune over various parameters for each model, allowing `caret` to figure out which tuning results in the best performance (as measured by Accuracy and Kappa values). The `doParallel` package allows us to utilize the full potential of multi-core machines. In my experience, it is a god-send that greatly reduces the time it took to work on this project.
+
+```{r, message=F, cache=T}
+require(caret)
+require(doParallel)
+set.seed(1234321)
+cl <- makeCluster(4)
+registerDoParallel(cl)
+trCtr <- trainControl(method='repeatedcv', number=5, repeats=3, classProbs=T, allowParallel=T)
+rfFit <- train(x=pml.train[feats], y=pml.train$classe, method='rf', preProcess=c('center', 'scale'), trControl=trCtr, tuneGrid=expand.grid(mtry=seq(10,15,1)), ntree = 200, nodesize=5)
+ldaFit <- train(x=pml.train[feats], y=pml.train$classe, method='lda', preProcess=c('center', 'scale'), trControl=trCtr)
+knnFit <- train(x=pml.train[feats], y=pml.train$classe, method='knn', preProcess=c('center', 'scale'), trControl=trCtr, tuneGrid=expand.grid(k=1:3))
+stopCluster(cl)
+```
+
+# Data Evaluation
+The random forest model performs slightly better than the knn model. It's interesting to note the best tuning value for knn via cross-validation was k=1. This corresponds to classifying an observation to the `classe` value of its single nearest neighbor. While it performs relatively well here, my inclination is that it is overfitting the data. The `mtry` tuning parameter of the random forest model, corresponding to the number of variables tried at each split, was found to be optimal when set to 11. 
+```{r, message=F, cache=T}
+rfFit$finalModel
+rfFit$results
+knnFit$results
+```
+The random forest model has an overall better performance than the knn model as determined by both the Accuracy and Kappa measures for their respective optimal tunings. Thus, the random forest model seems to be the clear winner. It can be further improved by increasing the number of trees it builds in its training, if desired. **The OOB (or OOS) estimate of the error rate for the final random forest model is 0.31%.**
+
+# Prediction
+We see that our two models predict the same `classe` values for all 20 test cases.
+```{r, message=F}
+pml.test <- pml.test.orig[feats]
+rf.preds <- predict(rfFit, pml.test)
+knn.preds <- predict(knnFit, pml.test)
+all(rf.preds == knn.preds)
+rf.preds
+```
